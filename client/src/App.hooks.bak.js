@@ -1,4 +1,4 @@
-import React, { useState, Component } from 'react'
+import React, { useState } from 'react'
 import styled from 'styled-components'
 import Peer from 'simple-peer'
 import * as openpgp from 'openpgp'
@@ -35,11 +35,15 @@ const FormContainer = styled.div`
 `
 
 const keygen = async () => {
+  const start = Date.now()
   const result = await openpgp.generateKey({
     userIds: [defaultUser],
     curve: defaultECCCurve,
     passphrase: defaultPassphrase
   })
+
+  console.log(Date.now() - start)
+  console.log(result)
 
   return result
 }
@@ -125,65 +129,80 @@ const ChatBox = ({ chats, handleSendChat }) => {
   )
 }
 
-class App extends Component {
-  state = {
-    state: 'start',
-    peerObj: {},
-    chats: [],
-    userName: '',
-    publicKey: '',
-    privateKey: '',
-    otherPubKey: ''
-  }
+const App = ({ socket }) => {
+  const [state, setState] = useState('start')
+  const [peerObj, setPeerObj] = useState({})
+  const [chats, setChats] = useState([])
+  const [userName, setUserName] = useState('')
+  const [publicKey, setPublicKey] = useState('')
+  const [privateKey, setPrivateKey] = useState('')
+  const [otherPubKey, setOtherPubKey] = useState('')
 
-  onSendChat = async (chatText) => {
+  console.log('otherPubKey', otherPubKey)
+
+  const onSendChat = async (chatText) => {
     const start = Date.now()
 
-    const message = { from: this.state.userName, text: chatText }
-    this.setState({ chats: [...this.state.chats, message] })
+    const message = { from: userName, text: chatText }
+    setChats(c => [...c, message])
+
+    console.log(Date.now() - start)
 
     const { data: encrypted } = await openpgp.encrypt({
       message: openpgp.message.fromText(JSON.stringify(message)),
-      publicKeys: (await openpgp.key.readArmored(this.state.otherPubKey)).keys
+      publicKeys: (await openpgp.key.readArmored(otherPubKey)).keys
     })
 
-    this.state.peerObj.send(encrypted)
+    console.log('otherPubKey', otherPubKey)
+    console.log(Date.now() - start)
+    console.log(encrypted)
+
+    peerObj.send(encrypted)
   }
 
-  handleIncomingData = async (data) => {
+  const handleIncomingData = async (data) => {
     const result = decodeIncomingData(data)
 
-    if (!this.state.otherPubKey) {
-      this.setState({ otherPubKey: result })
-    } else {
-      const { keys: [privKey] } = await openpgp.key.readArmored(this.state.privateKey);
-      await privKey.decrypt(defaultPassphrase);
+    console.log('incoming!!!')
 
+    console.log(result, otherPubKey)
+
+    if (!otherPubKey) {
+      console.log('setting otherPubKey', otherPubKey)
+      setOtherPubKey(result)
+    } else {
       const { data: decrypted } = await openpgp.decrypt({
         message: await openpgp.message.readArmored(result),
-        privateKeys: [privKey]
+        privateKeys: [privateKey]
       })
 
+      console.log(decrypted)
+
       const parsed = JSON.parse(decrypted)
+
       const message = { from: parsed.from, text: parsed.text }
-      this.setState({ chats: [...this.state.chats, message] })
+
+      setChats(c => [...c, message])
     }
   }
 
-  onConnected = async (peer) => {
-    this.setState({ peerObj: peer })
+  const onConnected = async (peer) => {
+    setPeerObj(peer)
 
     peer.on('error', err => console.error('connected-error', err))
-    peer.on('data', data => this.handleIncomingData(data))
+
+    peer.on('data', data => handleIncomingData(data))
 
     const { privateKeyArmored, publicKeyArmored, revocationCertificate } = await keygen()
-    this.setState({ publicKey: publicKeyArmored, privateKey: privateKeyArmored })
+
+    setPublicKey(publicKeyArmored)
+    setPrivateKey(privateKeyArmored)
 
     peer.send(publicKeyArmored)
   }
 
-  onCreateRoom = (roomName, userName) => {
-    this.setState({ userName })
+  const onCreateRoom = (roomName, userName) => {
+    setUserName(userName)
 
     const peer = new Peer({
       initiator: true,
@@ -195,27 +214,27 @@ class App extends Component {
     peer.on('signal', data => {
       // created automatically by the peer since initiator is true
       // send offer to server
-      this.props.socket.emit('create-room', { name: roomName, initiator: data })
-      this.setState({ state: 'room' })
+      socket.emit('create-room', { name: roomName, initiator: data })
+      setState('room')
     })
 
     peer.on('connect', () => {
       console.log(`Host Connected on: ${Date.now()}`)
-      this.onConnected(peer)
+      onConnected(peer)
     })
 
-    this.props.socket.on('failed-create', data => {
+    socket.on('failed-create', data => {
       alert(`failed to create room ${roomName}`)
     })
 
-    this.props.socket.on('answer', data => {
+    socket.on('answer', data => {
       // gets the answer, if successful it emits the connect event
       peer.signal(data.answer)
     })
   }
 
-  onJoinRoom = (roomName, userName) => {
-    this.setState({ userName })
+  const onJoinRoom = (roomName, userName) => {
+    setUserName(userName)
 
     const peer = new Peer({
       initiator: false,
@@ -225,60 +244,58 @@ class App extends Component {
     peer.on('error', err => console.error('peer-join-error', err))
 
     peer.on('signal', data => {
-      this.props.socket.emit('answer', { name: roomName, answer: data })
+      socket.emit('answer', { name: roomName, answer: data })
     })
 
     peer.on('connect', () => {
       console.log(`Peer Connected on: ${Date.now()}`)
-      this.onConnected(peer)
-      this.setState({ state: 'room' })
+      onConnected(peer)
+      setState('room')
     })
 
-    this.props.socket.on('offer', data => {
+    socket.on('offer', data => {
       // digest offer, return answer (in `peer.on('signal')`)
       peer.signal(data.offer)
     })
 
-    this.props.socket.on('failed-join', data => {
+    socket.on('failed-join', data => {
       alert(`failed to join room ${roomName}`)
     })
 
-    this.setState({ state: 'joining' })
-    // tell server i want to join a room, get offer back in `this.props.socket.on('offer')`
-    this.props.socket.emit('join-room', { name: roomName })
+    setState('joining')
+    // tell server i want to join a room, get offer back in `socket.on('offer')`
+    socket.emit('join-room', { name: roomName })
   }
 
-  handleState = (s) => {
+  const handleState = (s) => {
     switch (s) {
       case 'start':
         return <RoomForm
-          handleCreateRoom={this.onCreateRoom}
-          handleJoinRoom={this.onJoinRoom}
+          handleCreateRoom={onCreateRoom}
+          handleJoinRoom={onJoinRoom}
         />
       case 'joining':
         return <JoiningRoom />
       case 'room':
         return <ChatBox
-          userName={this.state.userName}
-          chats={this.state.chats}
-          handleSendChat={this.onSendChat}
+          userName={userName}
+          chats={chats}
+          handleSendChat={onSendChat}
         />
       default: return <div />
     }
   }
 
-  render () {
-    return (
-      <Background>
-        <Container>
-          <Topbar>
-            <Title>TylerChat</Title>
-          </Topbar>
-          {this.handleState(this.state.state)}
-        </Container>
-      </Background>
-    )
-  }
+  return (
+    <Background>
+      <Container>
+        <Topbar>
+          <Title>TylerChat</Title>
+        </Topbar>
+        {handleState(state)}
+      </Container>
+    </Background>
+  )
 }
 
 export const AppWithContext = () =>
