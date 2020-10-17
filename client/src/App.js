@@ -58,17 +58,17 @@ const JoiningRoom = () => {
 
 const RoomForm = ({ handleCreateRoom, handleJoinRoom }) => {
   const [createRoomName, setCreateRoomName] = useState('')
-  const [joinRoomName, setJoinRoomName] = useState('')
+  const [joinRoomId, setJoinRoomId] = useState('')
   const [userName, setUserName] = useState('')
 
   const handleSubmitCreateRoom = (event) => {
     event.preventDefault()
-    handleCreateRoom(createRoomName, userName)
+    handleCreateRoom({ roomName: createRoomName, userName })
   }
 
   const handleSubmitJoinRoom = (event) => {
     event.preventDefault()
-    handleJoinRoom(joinRoomName, userName)
+    handleJoinRoom({ roomId: joinRoomId, userName })
   }
 
   return (
@@ -92,7 +92,7 @@ const RoomForm = ({ handleCreateRoom, handleJoinRoom }) => {
           JOIN ROOM
         </div>
         <form onSubmit={(e) => handleSubmitJoinRoom(e)}>
-          <input onChange={(e) => setJoinRoomName(e.target.value)} />
+          <input onChange={(e) => setJoinRoomId(e.target.value)} />
         </form>
       </div>
     </FormContainer>
@@ -104,7 +104,6 @@ const ChatBox = ({ chats, handleSendChat }) => {
 
   const handleSubmitChat = (event) => {
     event.preventDefault()
-    console.log('chatText down here', chatText)
     handleSendChat(chatText)
     setChatText('')
   }
@@ -115,7 +114,7 @@ const ChatBox = ({ chats, handleSendChat }) => {
         <div key={i}>
           <hr />
           <div style={{ display: 'inline-block' }}>
-            {chat.from}: {chat.text}
+            <ChatText chat={chat}/>
           </div>
         </div>
       ))}
@@ -126,39 +125,99 @@ const ChatBox = ({ chats, handleSendChat }) => {
   )
 }
 
+const ChatText = ({ chat }) => {
+  const { type, from: chatFrom, text, name } = chat
+
+  switch (type) {
+    case 'introduction':
+      return <div>{name} joined!</div>
+    case 'chat':
+      return <div>{chatFrom}: {text}</div>
+    default: return <div />
+  }
+}
+
+  // creator -> socket 'create-room'
+  // server -> creator -> socket 'room-created' or 'failed-create'
+
+  // joiner -> socket 'join-room'
+  // server -> joiner -> socket 'present-list'
+  // server -> present(s) -> socket 'user-joining'
+
+  // everyone in room -> socket 'offer'
+  // 'offer' -> joiner
+  // joiner 'offer' into 'answer' -> present
+
+  // connected
+
+  // everyone creates and send new public keys per person
+  // everyone sets them for the incoming person
+
 class App extends Component {
   state = {
     state: 'start',
-    peerObj: {},
+    peers: [],
     chats: [],
-    userName: '',
-    publicKey: '',
-    privateKey: '',
-    otherPubKey: ''
+    roomId: '',
+    userId: '',
+    userName: ''
   }
 
-  onSendChat = async (chatText) => {
-    const start = Date.now()
+  // given a peer id, do something to a peer
+  setPeerState = (peerId, callback, completeCallback = () => {}) => {
+    const newPeers = this.state.peers.map(p => {
+      if (p.id === peerId) {
+        return callback(p)
+      }
 
-    const message = { from: this.state.userName, text: chatText }
-    this.setState({ chats: [...this.state.chats, message] })
-
-    const { data: encrypted } = await openpgp.encrypt({
-      message: openpgp.message.fromText(JSON.stringify(message)),
-      publicKeys: (await openpgp.key.readArmored(this.state.otherPubKey)).keys
+      return p
     })
 
-    this.state.peerObj.send(encrypted)
+    this.setState({ peers: newPeers }, completeCallback)
   }
 
-  handleIncomingData = async (data) => {
+  onSendChat = async ({ text, type = 'chat' }) => {
+    const message = { type }
+    if (type === 'chat') {
+      message.text = text
+    } else if (type === 'introduction') {
+      message.name = this.state.userName
+    }
+
+    this.setState({ chats: [...this.state.chats, { ...message, from: this.state.userName }] })
+
+    this.state.peers.map(async p => {
+      if (!p.peerPublicKey) {
+        throw new Error('Should not be sending message to someone we have no public key for.')
+      }
+
+      const { data: encrypted } = await openpgp.encrypt({
+        message: openpgp.message.fromText(JSON.stringify(message)),
+        publicKeys: (await openpgp.key.readArmored(p.peerPublicKey)).keys
+      })
+
+      p.peerObj.send(encrypted)
+    })
+  }
+
+  onIncomingData = async (data, peerId) => {
     const result = decodeIncomingData(data)
 
-    if (!this.state.otherPubKey) {
-      this.setState({ otherPubKey: result })
+    const peer = this.state.peers.find(p => p.id === peerId)
+
+    // if there is no peer public key, we hope this first request is the public key
+    if (!peer.peerPublicKey) {
+      // TODO: check and make sure this is actually a public key
+      this.setPeerState(peer.id, (p) => {
+        return { ...p, peerPublicKey: result }
+      },/* () => this.onSendChat({ type: 'introduction', name: this.state.userName })*/)
+
+      // why doesn't this work after setting state:
+      // this.onSendChat({ type: 'introduction', name: this.state.userName })
+      // something to do with timing?
     } else {
-      const { keys: [privKey] } = await openpgp.key.readArmored(this.state.privateKey);
-      await privKey.decrypt(defaultPassphrase);
+      const { keys: [privKey] } = await openpgp.key.readArmored(peer.privateKeyArmored)
+      await privKey.decrypt(defaultPassphrase)
 
       const { data: decrypted } = await openpgp.decrypt({
         message: await openpgp.message.readArmored(result),
@@ -166,87 +225,130 @@ class App extends Component {
       })
 
       const parsed = JSON.parse(decrypted)
-      const message = { from: parsed.from, text: parsed.text }
-      this.setState({ chats: [...this.state.chats, message] })
+
+      // figure out what to do with the parsed message
+      if (parsed.type === 'chat') {
+        const message = { type: 'chat', from: peer.name, text: parsed.text }
+
+        this.setState({ chats: [...this.state.chats, message] })
+      } else if (parsed.type === 'introduction') {
+        this.setPeerState(peer.id, (p) => {
+          p.name = parsed.name
+          return peer
+        })
+      }
     }
   }
 
-  onConnected = async (peer) => {
-    this.setState({ peerObj: peer })
-
-    peer.on('error', err => console.error('connected-error', err))
-    peer.on('data', data => this.handleIncomingData(data))
-
+  onConnected = async (peer, peerId) => {
     const { privateKeyArmored, publicKeyArmored, revocationCertificate } = await keygen()
-    this.setState({ publicKey: publicKeyArmored, privateKey: privateKeyArmored })
 
-    peer.send(publicKeyArmored)
+    this.setPeerState(peerId, (p) => {
+      p.peerObj.send(publicKeyArmored)
+      return { ...p, privateKeyArmored, publicKeyArmored, revocationCertificate }
+    })
   }
 
-  onCreateRoom = (roomName, userName) => {
+  onCreateRoom = ({ roomName, userName }) => {
     this.setState({ userName })
-
-    const peer = new Peer({
-      initiator: true,
-      trickle: false
-    })
-
-    peer.on('error', err => console.error('peer-init-error', err))
-
-    peer.on('signal', data => {
-      // created automatically by the peer since initiator is true
-      // send offer to server
-      this.props.socket.emit('create-room', { name: roomName, initiator: data })
-      this.setState({ state: 'room' })
-    })
-
-    peer.on('connect', () => {
-      console.log(`Host Connected on: ${Date.now()}`)
-      this.onConnected(peer)
-    })
 
     this.props.socket.on('failed-create', data => {
       alert(`failed to create room ${roomName}`)
     })
 
-    this.props.socket.on('answer', data => {
-      // gets the answer, if successful it emits the connect event
-      peer.signal(data.answer)
+    // TODO: allow userId to come from app, or gen a new one each time
+    this.props.socket.on('room-created', socketData => {
+      console.log(socketData.roomId)
+      this.setState(
+        { state: 'room', userId: socketData.userId, roomId: socketData.roomId },
+        () => this.onJoinRoom({ roomId: socketData.roomId, userName, first: true })
+      )
     })
+
+    this.props.socket.emit('create-room', { name: roomName })
   }
 
-  onJoinRoom = (roomName, userName) => {
-    this.setState({ userName })
+  onJoinRoom = ({ roomId, userName, first = false }) => {
+    this.props.socket.on('present-list', socketData => {
+      // set up the initial peers here
+      const peers = socketData.list.map(item => {
+        const peer = new Peer({
+          initiator: false,
+          trickle: false
+        })
 
-    const peer = new Peer({
-      initiator: false,
-      trickle: false
+        peer.on('signal', data => {
+          // emit answer
+          this.props.socket.emit('answer', {
+            roomId,
+            answer: data,
+            answerFrom: this.state.userId,
+            answerTo: item.id
+          })
+
+          this.setState({ state: 'room' })
+        })
+
+        peer.on('connect', () => this.onConnected(peer, item.id))
+        peer.on('data', data => this.onIncomingData(data, item.id))
+        peer.on('error', err => console.error('peer-init-error', err))
+
+        return { peerObj: peer, id: item.id }
+      })
+
+      this.setState({
+        roomId,
+        peers,
+        state: 'joining',
+        userId: socketData.userId
+      })
     })
 
-    peer.on('error', err => console.error('peer-join-error', err))
+    this.props.socket.on('offer', socketData => {
+      const { offerFrom, initiator } = socketData
 
-    peer.on('signal', data => {
-      this.props.socket.emit('answer', { name: roomName, answer: data })
+      // the peer that the offer is from
+      const offerFromPeer = this.state.peers.find(p => p.id === offerFrom)
+
+      offerFromPeer.peerObj.signal(initiator)
     })
 
-    peer.on('connect', () => {
-      console.log(`Peer Connected on: ${Date.now()}`)
-      this.onConnected(peer)
-      this.setState({ state: 'room' })
+    this.props.socket.on('user-joining', socketData => {
+      const peer = new Peer({
+        initiator: true,
+        trickle: false
+      })
+
+      // WARN: this.state.userId needs to be referenced directly
+      peer.on('signal', data => {
+        this.props.socket.emit('offer', {
+          roomId,
+          initiator: data,
+          offerFrom: this.state.userId,
+          offerTo: socketData.guestId
+        })
+      })
+
+      peer.on('connect', data => this.onConnected(peer, socketData.guestId))
+      peer.on('data', data => this.onIncomingData(data, socketData.guestId))
+      peer.on('error', err => console.error('peer-join-error', err))
+
+      this.setState({ peers: [...this.state.peers, { id: socketData.guestId, peerObj: peer }] })
     })
 
-    this.props.socket.on('offer', data => {
-      // digest offer, return answer (in `peer.on('signal')`)
-      peer.signal(data.offer)
+    this.props.socket.on('answer', socketData => {
+      const { answerFrom, answer } = socketData
+
+      const answerFromPeer = this.state.peers.find(p => p.id === answerFrom)
+
+      answerFromPeer.peerObj.signal(answer)
     })
 
-    this.props.socket.on('failed-join', data => {
-      alert(`failed to join room ${roomName}`)
-    })
-
-    this.setState({ state: 'joining' })
-    // tell server i want to join a room, get offer back in `this.props.socket.on('offer')`
-    this.props.socket.emit('join-room', { name: roomName })
+    if (!first) {
+      this.props.socket.emit('join-room', { roomId })
+      this.props.socket.on('failed-join', () => alert('failed to join room!'))
+      this.setState({ userName })
+    }
   }
 
   handleState = (s) => {
@@ -262,7 +364,7 @@ class App extends Component {
         return <ChatBox
           userName={this.state.userName}
           chats={this.state.chats}
-          handleSendChat={this.onSendChat}
+          handleSendChat={(chatText) => this.onSendChat({ text: chatText })}
         />
       default: return <div />
     }

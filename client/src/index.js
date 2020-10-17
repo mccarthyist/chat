@@ -1,12 +1,12 @@
 import React from 'react'
 import ReactDOM from 'react-dom'
-import io from 'socket.io-client'
+// import io from 'socket.io-client'
 import './index.css'
 import App from './App'
 import * as serviceWorker from './serviceWorker'
 import SocketContext from './SocketContext'
 
-const socket = io()
+const socket = new WebSocket('ws://localhost:4000/')
 
 ReactDOM.render(
   <SocketContext.Provider value={socket}>
