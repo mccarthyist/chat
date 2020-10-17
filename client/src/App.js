@@ -165,12 +165,12 @@ class App extends Component {
 
   // given a peer id, do something to a peer
   setPeerState = (peerId, callback, completeCallback = () => {}) => {
-    const newPeers = this.state.peers.map(peer => {
-      if (peer.id === peerId) {
-        return callback(peer)
+    const newPeers = this.state.peers.map(p => {
+      if (p.id === peerId) {
+        return callback(p)
       }
 
-      return peer
+      return p
     })
 
     this.setState({ peers: newPeers }, completeCallback)
@@ -186,31 +186,31 @@ class App extends Component {
 
     this.setState({ chats: [...this.state.chats, { ...message, from: this.state.userName }] })
 
-    this.state.peers.map(async peer => {
-      if (!peer.peerPublicKey) {
+    this.state.peers.map(async p => {
+      if (!p.peerPublicKey) {
         throw new Error('Should not be sending message to someone we have no public key for.')
       }
 
       const { data: encrypted } = await openpgp.encrypt({
         message: openpgp.message.fromText(JSON.stringify(message)),
-        publicKeys: (await openpgp.key.readArmored(peer.peerPublicKey)).keys
+        publicKeys: (await openpgp.key.readArmored(p.peerPublicKey)).keys
       })
 
-      peer.peerObj.send(encrypted)
+      p.peerObj.send(encrypted)
     })
   }
 
   onIncomingData = async (data, peerId) => {
     const result = decodeIncomingData(data)
 
-    const peer = this.state.peers.find(peer => peer.id === peerId)
+    const peer = this.state.peers.find(p => p.id === peerId)
 
     // if there is no peer public key, we hope this first request is the public key
     if (!peer.peerPublicKey) {
       // TODO: check and make sure this is actually a public key
-      this.setPeerState(peerId, (peer) => {
-        return { ...peer, peerPublicKey: result }
-      })
+      this.setPeerState(peer.id, (p) => {
+        return { ...p, peerPublicKey: result }
+      },/* () => this.onSendChat({ type: 'introduction', name: this.state.userName })*/)
 
       // why doesn't this work after setting state:
       // this.onSendChat({ type: 'introduction', name: this.state.userName })
@@ -232,8 +232,8 @@ class App extends Component {
 
         this.setState({ chats: [...this.state.chats, message] })
       } else if (parsed.type === 'introduction') {
-        this.setPeerState(peer.id, (peer) => {
-          peer.name = parsed.name
+        this.setPeerState(peer.id, (p) => {
+          p.name = parsed.name
           return peer
         })
       }
@@ -243,9 +243,9 @@ class App extends Component {
   onConnected = async (peer, peerId) => {
     const { privateKeyArmored, publicKeyArmored, revocationCertificate } = await keygen()
 
-    this.setPeerState(peerId, (peer) => {
-      peer.peerObj.send(publicKeyArmored)
-      return { ...peer, privateKeyArmored, publicKeyArmored, revocationCertificate }
+    this.setPeerState(peerId, (p) => {
+      p.peerObj.send(publicKeyArmored)
+      return { ...p, privateKeyArmored, publicKeyArmored, revocationCertificate }
     })
   }
 
@@ -309,7 +309,7 @@ class App extends Component {
       const { offerFrom, initiator } = socketData
 
       // the peer that the offer is from
-      const offerFromPeer = this.state.peers.find(peer => offerFrom === peer.id)
+      const offerFromPeer = this.state.peers.find(p => p.id === offerFrom)
 
       offerFromPeer.peerObj.signal(initiator)
     })
@@ -340,7 +340,7 @@ class App extends Component {
     this.props.socket.on('answer', socketData => {
       const { answerFrom, answer } = socketData
 
-      const answerFromPeer = this.state.peers.find(peer => answerFrom === peer.id)
+      const answerFromPeer = this.state.peers.find(p => p.id === answerFrom)
 
       answerFromPeer.peerObj.signal(answer)
     })
