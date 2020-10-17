@@ -20,8 +20,12 @@ const newRoom = ({ roomId, name, userOne, now }) => ({
   started: now
 })
 
+const debug = ({ message }) => console.info('DEBUG: ', message)
+
 io.on('connection', socket => {
   console.info('connected!!', rooms.length)
+
+  socket.on('debug', data => debug(data))
 
   socket.on('create-room', data => {
     console.info('room created', data)
@@ -48,7 +52,6 @@ io.on('connection', socket => {
     }
 
     const userId = uuid()
-    console.log('joining room', room.users)
 
     const list = []
     for (let i = 0; i < room.users.length; i++) {
@@ -56,8 +59,7 @@ io.on('connection', socket => {
 
       list.push({ id: presentUser.id })
 
-      // tell all presentUsers I need to get in.
-      console.log('emittting', presentUser.socketId, { guestId: userId })
+      // tell all present users I need to get in.
       io.to(presentUser.socketId).emit('user-joining', { guestId: userId })
     }
 
@@ -75,10 +77,8 @@ io.on('connection', socket => {
     const { offerFrom, offerTo, roomId, initiator } = data
 
     const room = roomDict[data.roomId]
-    console.log(room.users)
     const destinedMember = room.users.find(user => user.id === offerTo)
 
-    console.log('sending offer', offerFrom, destinedMember.socketId)
     io.to(destinedMember.socketId).emit('offer', { initiator, offerFrom })
   })
 
@@ -87,10 +87,8 @@ io.on('connection', socket => {
     const { answerFrom, answerTo, roomId, answer } = data
 
     const room = roomDict[data.roomId]
-
     const destinedMember = room.users.find(user => user.id === answerTo)
 
-    console.log('sending answer', answerFrom, destinedMember.socketId)
     io.to(destinedMember.socketId).emit('answer', { answer, answerFrom })
   })
 })
