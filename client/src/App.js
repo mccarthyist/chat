@@ -114,7 +114,7 @@ const ChatBox = ({ chats, handleSendChat }) => {
         <div key={i}>
           <hr />
           <div style={{ display: 'inline-block' }}>
-            {chat.from}: {chat.text}
+            <ChatText chat={chat}/>
           </div>
         </div>
       ))}
@@ -123,6 +123,18 @@ const ChatBox = ({ chats, handleSendChat }) => {
       </form>
     </div>
   )
+}
+
+const ChatText = ({ chat }) => {
+  const { type, from: chatFrom, text, name } = chat
+
+  switch (type) {
+    case 'introduction':
+      return <div>{name} joined!</div>
+    case 'chat':
+      return <div>{chatFrom}: {text}</div>
+    default: return <div />
+  }
 }
 
   // creator -> socket 'create-room'
@@ -151,13 +163,34 @@ class App extends Component {
     userName: ''
   }
 
-  onSendChat = async (chatText) => {
-    const start = Date.now()
+  // given a peer id, do something to a peer
+  setPeerState = (peerId, callback) => {
+    const newPeers = this.state.peers.map(peer => {
+      if (peer.id === peerId) {
+        return callback(peer)
+      }
 
-    const message = { text: chatText }
+      return peer
+    })
+
+    this.setState({ peers: newPeers })
+  }
+
+  onSendChat = async ({ text, type = 'chat' }) => {
+    const message = { type }
+    if (type === 'chat') {
+      message.text = text
+    } else if (type === 'introduction') {
+      message.name = this.state.userName
+    }
+
     this.setState({ chats: [...this.state.chats, { ...message, from: this.state.userName }] })
 
     this.state.peers.map(async peer => {
+      if (!peer.peerPublicKey) {
+        throw new Error('Should not be sending message to someone we have no public key for.')
+      }
+
       const { data: encrypted } = await openpgp.encrypt({
         message: openpgp.message.fromText(JSON.stringify(message)),
         publicKeys: (await openpgp.key.readArmored(peer.peerPublicKey)).keys
@@ -171,6 +204,8 @@ class App extends Component {
     const result = decodeIncomingData(data)
 
     const peer = this.state.peers.find(peer => peer.id === peerId)
+
+    // if there is no peer public key, we hope this first request is the public key
     if (!peer.peerPublicKey) {
       // TODO: check and make sure this is actually a public key
       const newPeers = this.state.peers.map(peer => {
@@ -182,8 +217,6 @@ class App extends Component {
       })
 
       this.setState({ peers: newPeers })
-
-      // this.onSendChat({ type: 'introduction', name: this.state.userName })
     } else {
       const { keys: [privKey] } = await openpgp.key.readArmored(peer.privateKeyArmored)
       await privKey.decrypt(defaultPassphrase)
@@ -194,26 +227,28 @@ class App extends Component {
       })
 
       const parsed = JSON.parse(decrypted)
-      const message = { from: peer.name, text: parsed.text }
 
-      this.setState({ chats: [...this.state.chats, message] })
+      // figure out what to do with the parsed message
+      if (parsed.type === 'chat') {
+        const message = { type: 'chat', from: peer.name, text: parsed.text }
+
+        this.setState({ chats: [...this.state.chats, message] })
+      } else if (parsed.type === 'introduction') {
+        this.setPeerState(peer.id, (peer) => {
+          peer.name = parsed.name
+          return peer
+        })
+      }
     }
   }
 
   onConnected = async (peer, peerId) => {
     const { privateKeyArmored, publicKeyArmored, revocationCertificate } = await keygen()
 
-    const newPeers = this.state.peers.map(peer => {
-      if (peer.id === peerId) {
-        // send the public key after setting the state
-        peer.peerObj.send(publicKeyArmored)
-        return { ...peer, privateKeyArmored, publicKeyArmored, revocationCertificate }
-      }
-
-      return peer
+    this.setPeerState(peerId, (peer) => {
+      peer.peerObj.send(publicKeyArmored)
+      return { ...peer, privateKeyArmored, publicKeyArmored, revocationCertificate }
     })
-
-    this.setState({ peers: newPeers })
   }
 
   onCreateRoom = (roomName, userName) => {
@@ -275,6 +310,7 @@ class App extends Component {
     this.props.socket.on('offer', socketData => {
       const { offerFrom, initiator } = socketData
 
+      // the peer that the offer is from
       const offerFromPeer = this.state.peers.find(peer => offerFrom === peer.id)
 
       offerFromPeer.peerObj.signal(initiator)
@@ -314,6 +350,7 @@ class App extends Component {
     if (!first) {
       this.props.socket.emit('join-room', { roomId })
       this.props.socket.on('failed-join', () => alert('failed to join room!'))
+      this.setState({ userName })
     }
   }
 
@@ -330,7 +367,7 @@ class App extends Component {
         return <ChatBox
           userName={this.state.userName}
           chats={this.state.chats}
-          handleSendChat={this.onSendChat}
+          handleSendChat={(chatText) => this.onSendChat({ text: chatText })}
         />
       default: return <div />
     }
