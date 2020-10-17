@@ -164,7 +164,7 @@ class App extends Component {
   }
 
   // given a peer id, do something to a peer
-  setPeerState = (peerId, callback) => {
+  setPeerState = (peerId, callback, completeCallback = () => {}) => {
     const newPeers = this.state.peers.map(peer => {
       if (peer.id === peerId) {
         return callback(peer)
@@ -173,7 +173,7 @@ class App extends Component {
       return peer
     })
 
-    this.setState({ peers: newPeers })
+    this.setState({ peers: newPeers }, completeCallback)
   }
 
   onSendChat = async ({ text, type = 'chat' }) => {
@@ -208,15 +208,13 @@ class App extends Component {
     // if there is no peer public key, we hope this first request is the public key
     if (!peer.peerPublicKey) {
       // TODO: check and make sure this is actually a public key
-      const newPeers = this.state.peers.map(peer => {
-        if (peer.id === peerId) {
-          return { ...peer, peerPublicKey: result }
-        }
-
-        return peer
+      this.setPeerState(peerId, (peer) => {
+        return { ...peer, peerPublicKey: result }
       })
 
-      this.setState({ peers: newPeers })
+      // why doesn't this work after setting state:
+      // this.onSendChat({ type: 'introduction', name: this.state.userName })
+      // something to do with timing?
     } else {
       const { keys: [privKey] } = await openpgp.key.readArmored(peer.privateKeyArmored)
       await privKey.decrypt(defaultPassphrase)
