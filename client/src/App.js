@@ -58,17 +58,17 @@ const JoiningRoom = () => {
 
 const RoomForm = ({ handleCreateRoom, handleJoinRoom }) => {
   const [createRoomName, setCreateRoomName] = useState('')
-  const [joinRoomName, setJoinRoomName] = useState('')
+  const [joinRoomId, setJoinRoomId] = useState('')
   const [userName, setUserName] = useState('')
 
   const handleSubmitCreateRoom = (event) => {
     event.preventDefault()
-    handleCreateRoom(createRoomName, userName)
+    handleCreateRoom({ roomName: createRoomName, userName })
   }
 
   const handleSubmitJoinRoom = (event) => {
     event.preventDefault()
-    handleJoinRoom(joinRoomName, userName)
+    handleJoinRoom({ roomId: joinRoomId, userName })
   }
 
   return (
@@ -92,7 +92,7 @@ const RoomForm = ({ handleCreateRoom, handleJoinRoom }) => {
           JOIN ROOM
         </div>
         <form onSubmit={(e) => handleSubmitJoinRoom(e)}>
-          <input onChange={(e) => setJoinRoomName(e.target.value)} />
+          <input onChange={(e) => setJoinRoomId(e.target.value)} />
         </form>
       </div>
     </FormContainer>
@@ -249,27 +249,26 @@ class App extends Component {
     })
   }
 
-  onCreateRoom = (roomName, userName) => {
+  onCreateRoom = ({ roomName, userName }) => {
     this.setState({ userName })
 
     this.props.socket.on('failed-create', data => {
       alert(`failed to create room ${roomName}`)
     })
 
-    // TODO: allow userId to come from app,
-    // or gen a new one each time?
+    // TODO: allow userId to come from app, or gen a new one each time
     this.props.socket.on('room-created', socketData => {
       console.log(socketData.roomId)
       this.setState(
         { state: 'room', userId: socketData.userId, roomId: socketData.roomId },
-        () => this.onJoinRoom(socketData.roomId, userName, true)
+        () => this.onJoinRoom({ roomId: socketData.roomId, userName, first: true })
       )
     })
 
     this.props.socket.emit('create-room', { name: roomName })
   }
 
-  onJoinRoom = (roomId, userName, first = false) => {
+  onJoinRoom = ({ roomId, userName, first = false }) => {
     this.props.socket.on('present-list', socketData => {
       // set up the initial peers here
       const peers = socketData.list.map(item => {
