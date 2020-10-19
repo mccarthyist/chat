@@ -20,7 +20,7 @@ const newRoom = ({ roomId, name, userOne, now }) => ({
   started: now
 })
 
-const debug = ({ message }) => console.info('DEBUG: ', message)
+const debug = ({ message }) => console.info('DEBUG: ', Date.now(), message)
 
 io.on('connection', socket => {
   console.info('connected!!', rooms.length)
@@ -76,7 +76,7 @@ io.on('connection', socket => {
     // TODO: add a check to make sure the offer is ALLOWED to go to someone
     const { offerFrom, offerTo, roomId, initiator } = data
 
-    const room = roomDict[data.roomId]
+    const room = roomDict[roomId]
     const destinedMember = room.users.find(user => user.id === offerTo)
 
     io.to(destinedMember.socketId).emit('offer', { initiator, offerFrom })
@@ -86,7 +86,7 @@ io.on('connection', socket => {
     // TODO: add a check to make sure the answer is ALLOWED to go to someone
     const { answerFrom, answerTo, roomId, answer } = data
 
-    const room = roomDict[data.roomId]
+    const room = roomDict[roomId]
     const destinedMember = room.users.find(user => user.id === answerTo)
 
     io.to(destinedMember.socketId).emit('answer', { answer, answerFrom })

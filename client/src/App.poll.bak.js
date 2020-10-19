@@ -4,6 +4,8 @@ import Peer from 'simple-peer'
 import * as openpgp from 'openpgp'
 import SocketContext from './SocketContext'
 
+const POLL_INTERVAL = 1000
+
 const defaultUser = { name: 'Jon Smith', email: 'jon@example.com' }
 const defaultECCCurve = 'ed25519'
 const defaultPassphrase = 'ThisNeedsToBeChanged'
@@ -89,7 +91,7 @@ const RoomForm = ({ handleCreateRoom, handleJoinRoom }) => {
       </div>
       <div>
         <div>
-          JOIN ROOM (using id)
+          JOIN ROOM
         </div>
         <form onSubmit={(e) => handleSubmitJoinRoom(e)}>
           <input onChange={(e) => setJoinRoomId(e.target.value)} />
@@ -126,12 +128,14 @@ const ChatBox = ({ chats, handleSendChat }) => {
 }
 
 const ChatText = ({ chat }) => {
-  const { type, from: chatFrom, text } = chat
+  const { type, from: chatFrom, text, name } = chat
 
   switch (type) {
+    case 'introduction':
+      return <div>{name} joined!</div>
     case 'chat':
       return <div>{chatFrom}: {text}</div>
-    default: return null
+    default: return <div />
   }
 }
 
@@ -153,12 +157,36 @@ const ChatText = ({ chat }) => {
 
 class App extends Component {
   state = {
-    state: 'start',
     peers: [],
     chats: [],
+    jobs: [],
+    state: 'start',
     roomId: '',
     userId: '',
     userName: ''
+  }
+
+  componentDidMount = () => {
+    const intervalId = setInterval(this.poll, POLL_INTERVAL)
+
+    this.setState({ pollInterval: intervalId })
+  }
+
+  poll = () => {
+    this.state.jobs.map(job => {
+      console.log('doing poll')
+      switch (job.type) {
+        case 'introduction':
+          console.log('here')
+          // this.onSendChat({ type: 'introduction' })
+          break
+        default:
+          console.error('no polling job type')
+          break
+      }
+    })
+
+    this.setState({ jobs: [] })
   }
 
   // given a peer id, do something to a peer
@@ -174,22 +202,24 @@ class App extends Component {
     this.setState({ peers: newPeers }, completeCallback)
   }
 
+  addPollingJob = (job) => {
+    this.setState({ jobs: [...this.state.jobs, job] })
+  }
+
   onSendChat = async ({ text, type = 'chat' }) => {
     const message = { type }
     if (type === 'chat') {
       message.text = text
     } else if (type === 'introduction') {
+      this.props.socket.emit('debug', { message: `Sending introduction from ${this.state.userName}` })
       message.name = this.state.userName
     }
 
-    if (type !== 'introduction') {
-      this.setState({ chats: [...this.state.chats, { ...message, from: this.state.userName }] })
-    }
+    this.setState({ chats: [...this.state.chats, { ...message, from: this.state.userName }] })
 
     this.state.peers.map(async p => {
       if (!p.peerPublicKey) {
-        console.error('Cant send message to peer without their public key')
-        return
+        throw new Error('Should not be sending message to someone we have no public key for.')
       }
 
       const { data: encrypted } = await openpgp.encrypt({
@@ -211,10 +241,11 @@ class App extends Component {
       // TODO: check and make sure this is actually a public key
       this.setPeerState(peer.id, (p) => {
         return { ...p, peerPublicKey: result }
-      }, () => setTimeout(() => {
-        // WARN: this arbitrary time could cause problems
-        this.onSendChat({ type: 'introduction', name: this.state.userName })
-      }, 500))
+      }, () => this.addPollingJob({ type: 'introduction' }))
+
+      // why doesn't this work after setting state:
+      // this.onSendChat({ type: 'introduction', name: this.state.userName })
+      // something to do with timing?
     } else {
       const { keys: [privKey] } = await openpgp.key.readArmored(peer.privateKeyArmored)
       await privKey.decrypt(defaultPassphrase)
@@ -228,7 +259,9 @@ class App extends Component {
 
       // figure out what to do with the parsed message
       if (parsed.type === 'chat') {
-        this.setState({ chats: [...this.state.chats, { type: 'chat', from: peer.name, text: parsed.text }] })
+        const message = { type: 'chat', from: peer.name, text: parsed.text }
+
+        this.setState({ chats: [...this.state.chats, message] })
       } else if (parsed.type === 'introduction') {
         this.props.socket.emit('debug', { message: `${this.state.userName} Got intro from ${parsed.name}` })
         this.setPeerState(peer.id, (p) => {
@@ -311,7 +344,7 @@ class App extends Component {
 
       offerFromPeer.peerObj.signal(initiator)
     })
-    // can the above and below can be combined?
+
     this.props.socket.on('user-joining', socketData => {
       const peer = new Peer({
         initiator: true,
